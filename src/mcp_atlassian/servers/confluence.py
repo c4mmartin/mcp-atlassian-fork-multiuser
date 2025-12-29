@@ -6,9 +6,11 @@ from typing import Annotated
 
 from fastmcp import Context, FastMCP
 from pydantic import BeforeValidator, Field
+from starlette.requests import Request
 
 from mcp_atlassian.exceptions import MCPAtlassianAuthenticationError
 from mcp_atlassian.servers.dependencies import get_confluence_fetcher
+from mcp_atlassian.sessions.helpers import get_confluence_client
 from mcp_atlassian.utils.decorators import (
     check_write_access,
 )
@@ -19,6 +21,17 @@ confluence_mcp = FastMCP(
     name="Confluence MCP Service",
     description="Provides tools for interacting with Atlassian Confluence.",
 )
+
+
+# Helper to select session-aware or legacy fetcher
+async def get_session_aware_confluence_fetcher(ctx: Context):
+    request = getattr(ctx, "request", None)
+    if request and hasattr(request.state, "session") and request.state.session:
+        try:
+            return get_confluence_client(request)
+        except Exception as e:
+            logger.warning(f"Session-based Confluence client failed: {e}, falling back to legacy fetcher.")
+    return await get_confluence_fetcher(ctx)
 
 
 @confluence_mcp.tool(tags={"confluence", "read"})
@@ -81,7 +94,7 @@ async def search(
     Returns:
         JSON string representing a list of simplified Confluence page objects.
     """
-    confluence_fetcher = await get_confluence_fetcher(ctx)
+    confluence_fetcher = await get_session_aware_confluence_fetcher(ctx)
     # Check if the query is a simple search term or already a CQL query
     if query and not any(
         x in query for x in ["=", "~", ">", "<", " AND ", " OR ", "currentUser()"]
@@ -175,7 +188,7 @@ async def get_page(
     Returns:
         JSON string representing the page content and/or metadata, or an error if not found or parameters are invalid.
     """
-    confluence_fetcher = await get_confluence_fetcher(ctx)
+    confluence_fetcher = await get_session_aware_confluence_fetcher(ctx)
     page_object = None
 
     if page_id:
@@ -284,7 +297,7 @@ async def get_page_children(
     Returns:
         JSON string representing a list of child page objects.
     """
-    confluence_fetcher = await get_confluence_fetcher(ctx)
+    confluence_fetcher = await get_session_aware_confluence_fetcher(ctx)
     if include_content and "body" not in expand:
         expand = f"{expand},body.storage" if expand else "body.storage"
 
@@ -337,7 +350,7 @@ async def get_comments(
     Returns:
         JSON string representing a list of comment objects.
     """
-    confluence_fetcher = await get_confluence_fetcher(ctx)
+    confluence_fetcher = await get_session_aware_confluence_fetcher(ctx)
     comments = confluence_fetcher.get_page_comments(page_id)
     formatted_comments = [comment.to_simplified_dict() for comment in comments]
     return json.dumps(formatted_comments, indent=2, ensure_ascii=False)
@@ -366,7 +379,7 @@ async def get_labels(
     Returns:
         JSON string representing a list of label objects.
     """
-    confluence_fetcher = await get_confluence_fetcher(ctx)
+    confluence_fetcher = await get_session_aware_confluence_fetcher(ctx)
     labels = confluence_fetcher.get_page_labels(page_id)
     formatted_labels = [label.to_simplified_dict() for label in labels]
     return json.dumps(formatted_labels, indent=2, ensure_ascii=False)
@@ -392,7 +405,7 @@ async def add_label(
     Raises:
         ValueError: If in read-only mode or Confluence client is unavailable.
     """
-    confluence_fetcher = await get_confluence_fetcher(ctx)
+    confluence_fetcher = await get_session_aware_confluence_fetcher(ctx)
     labels = confluence_fetcher.add_page_label(page_id, name)
     formatted_labels = [label.to_simplified_dict() for label in labels]
     return json.dumps(formatted_labels, indent=2, ensure_ascii=False)
@@ -455,7 +468,7 @@ async def create_page(
     Raises:
         ValueError: If in read-only mode, Confluence client is unavailable, or invalid content_format.
     """
-    confluence_fetcher = await get_confluence_fetcher(ctx)
+    confluence_fetcher = await get_session_aware_confluence_fetcher(ctx)
 
     # Validate content_format
     if content_format not in ["markdown", "wiki", "storage"]:
@@ -547,7 +560,7 @@ async def update_page(
     Raises:
         ValueError: If Confluence client is not configured, available, or invalid content_format.
     """
-    confluence_fetcher = await get_confluence_fetcher(ctx)
+    confluence_fetcher = await get_session_aware_confluence_fetcher(ctx)
 
     # Validate content_format
     if content_format not in ["markdown", "wiki", "storage"]:
@@ -602,7 +615,7 @@ async def delete_page(
     Raises:
         ValueError: If Confluence client is not configured or available.
     """
-    confluence_fetcher = await get_confluence_fetcher(ctx)
+    confluence_fetcher = await get_session_aware_confluence_fetcher(ctx)
     try:
         result = confluence_fetcher.delete_page(page_id=page_id)
         if result:
@@ -650,7 +663,7 @@ async def add_comment(
     Raises:
         ValueError: If in read-only mode or Confluence client is unavailable.
     """
-    confluence_fetcher = await get_confluence_fetcher(ctx)
+    confluence_fetcher = await get_session_aware_confluence_fetcher(ctx)
     try:
         comment = confluence_fetcher.add_comment(page_id=page_id, content=content)
         if comment:
@@ -711,7 +724,7 @@ async def search_user(
     Returns:
         JSON string representing a list of simplified Confluence user search result objects.
     """
-    confluence_fetcher = await get_confluence_fetcher(ctx)
+    confluence_fetcher = await get_session_aware_confluence_fetcher(ctx)
 
     # If the query doesn't look like CQL, wrap it as a user fullname search
     if query and not any(

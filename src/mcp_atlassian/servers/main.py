@@ -4,6 +4,7 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any, Literal, Optional
+import os
 
 from cachetools import TTLCache
 from fastmcp import FastMCP
@@ -19,7 +20,11 @@ from mcp_atlassian.confluence import ConfluenceFetcher
 from mcp_atlassian.confluence.config import ConfluenceConfig
 from mcp_atlassian.jira import JiraFetcher
 from mcp_atlassian.jira.config import JiraConfig
+from mcp_atlassian.sessions.manager import SessionManager
+from mcp_atlassian.sessions.middleware import SessionTokenMiddleware
+from mcp_atlassian.sessions.routes import register_session_routes
 from mcp_atlassian.utils.environment import get_available_services
+from mcp_atlassian.utils.env import is_env_truthy
 from mcp_atlassian.utils.io import is_read_only_mode
 from mcp_atlassian.utils.logging import mask_sensitive
 from mcp_atlassian.utils.tools import get_enabled_tools, should_include_tool
@@ -35,6 +40,15 @@ async def health_check(request: Request) -> JSONResponse:
     return JSONResponse({"status": "ok"})
 
 
+def add_session_middleware(app):
+    """Add session token middleware if multi-user mode is enabled via env."""
+    if is_env_truthy("MCP_MULTIUSER") or is_env_truthy("MCP_SESSIONS_ENABLED"):
+        app.add_middleware(SessionTokenMiddleware)
+        logger.info("SessionTokenMiddleware enabled (multi-user mode)")
+    else:
+        logger.info("SessionTokenMiddleware not enabled (single-user mode)")
+
+
 @asynccontextmanager
 async def main_lifespan(app: FastMCP[MainAppContext]) -> AsyncIterator[dict]:
     logger.info("Main Atlassian MCP server lifespan starting...")
@@ -45,6 +59,30 @@ async def main_lifespan(app: FastMCP[MainAppContext]) -> AsyncIterator[dict]:
     loaded_jira_config: JiraConfig | None = None
     loaded_confluence_config: ConfluenceConfig | None = None
 
+    # --- TLS Enforcement Logic ---
+    multiuser_enabled = is_env_truthy("MCP_MULTIUSER", "0") or is_env_truthy("MCP_SESSIONS_ENABLED", "0")
+    tls_enabled = is_env_truthy("MCP_TLS_ENABLED", "0")
+    cert_file = os.getenv("MCP_TLS_CERT_FILE", "")
+    key_file = os.getenv("MCP_TLS_KEY_FILE", "")
+    ca_file = os.getenv("MCP_TLS_CA_FILE", "")
+    transport_mode = os.getenv("TRANSPORT", "stdio")
+
+    # Only enforce TLS for HTTP transports in multi-user mode
+    if multiuser_enabled and transport_mode in ("sse", "streamable-http"):
+        if not tls_enabled:
+            logger.error("TLS is REQUIRED for multi-user HTTP mode. Set MCP_TLS_ENABLED=true and provide cert/key files.")
+            raise RuntimeError("TLS is required for multi-user HTTP transport. Refusing to start.")
+        if not cert_file or not key_file:
+            logger.error("TLS cert/key files are required for multi-user HTTP mode. Set MCP_TLS_CERT_FILE and MCP_TLS_KEY_FILE.")
+            raise RuntimeError("TLS cert/key files missing. Refusing to start in multi-user HTTP mode.")
+        logger.info(f"TLS enforcement: MCP_TLS_ENABLED={tls_enabled}, cert={cert_file}, key={key_file}, ca={ca_file}")
+    elif not tls_enabled and transport_mode in ("sse", "streamable-http"):
+        logger.warning("TLS is DISABLED for HTTP transport. This is insecure and should only be used for local development or single-user mode.")
+    # End TLS enforcement logic
+
+    # If multi-user mode is enabled, allow missing global credentials
+    multiuser_enabled = is_env_truthy("MCP_MULTIUSER") or is_env_truthy("MCP_SESSIONS_ENABLED")
+
     if services.get("jira"):
         try:
             jira_config = JiraConfig.from_env()
@@ -54,11 +92,17 @@ async def main_lifespan(app: FastMCP[MainAppContext]) -> AsyncIterator[dict]:
                     "Jira configuration loaded and authentication is configured."
                 )
             else:
-                logger.warning(
-                    "Jira URL found, but authentication is not fully configured. Jira tools will be unavailable."
-                )
+                if multiuser_enabled:
+                    logger.info("Multi-user mode enabled: Jira global credentials not required.")
+                else:
+                    logger.warning(
+                        "Jira URL found, but authentication is not fully configured. Jira tools will be unavailable."
+                    )
         except Exception as e:
-            logger.error(f"Failed to load Jira configuration: {e}", exc_info=True)
+            if multiuser_enabled:
+                logger.info(f"Multi-user mode enabled: Jira global credentials not required. ({e})")
+            else:
+                logger.error(f"Failed to load Jira configuration: {e}", exc_info=True)
 
     if services.get("confluence"):
         try:
@@ -69,11 +113,17 @@ async def main_lifespan(app: FastMCP[MainAppContext]) -> AsyncIterator[dict]:
                     "Confluence configuration loaded and authentication is configured."
                 )
             else:
-                logger.warning(
-                    "Confluence URL found, but authentication is not fully configured. Confluence tools will be unavailable."
-                )
+                if multiuser_enabled:
+                    logger.info("Multi-user mode enabled: Confluence global credentials not required.")
+                else:
+                    logger.warning(
+                        "Confluence URL found, but authentication is not fully configured. Confluence tools will be unavailable."
+                    )
         except Exception as e:
-            logger.error(f"Failed to load Confluence configuration: {e}", exc_info=True)
+            if multiuser_enabled:
+                logger.info(f"Multi-user mode enabled: Confluence global credentials not required. ({e})")
+            else:
+                logger.error(f"Failed to load Confluence configuration: {e}", exc_info=True)
 
     app_context = MainAppContext(
         full_jira_config=loaded_jira_config,
@@ -191,6 +241,7 @@ class AtlassianMCP(FastMCP[MainAppContext]):
         middleware: list[Middleware] | None = None,
         transport: Literal["streamable-http", "sse"] = "streamable-http",
     ) -> "Starlette":
+        # Always add UserTokenMiddleware for user token extraction
         user_token_mw = Middleware(UserTokenMiddleware, mcp_server_ref=self)
         final_middleware_list = [user_token_mw]
         if middleware:
@@ -198,6 +249,13 @@ class AtlassianMCP(FastMCP[MainAppContext]):
         app = super().http_app(
             path=path, middleware=final_middleware_list, transport=transport
         )
+
+        # Add session token middleware only in multi-user mode
+        if is_env_truthy("MCP_MULTIUSER") or is_env_truthy("MCP_SESSIONS_ENABLED"):
+            app.add_middleware(SessionTokenMiddleware)
+            logger.info("SessionTokenMiddleware enabled (multi-user mode)")
+        else:
+            logger.info("SessionTokenMiddleware not enabled (single-user mode)")
         return app
 
 
@@ -325,9 +383,13 @@ class UserTokenMiddleware(BaseHTTPMiddleware):
         return response
 
 
+
+
 main_mcp = AtlassianMCP(name="Atlassian MCP", lifespan=main_lifespan)
 main_mcp.mount("jira", jira_mcp)
 main_mcp.mount("confluence", confluence_mcp)
+if is_env_truthy("MCP_MULTIUSER") or is_env_truthy("MCP_SESSIONS_ENABLED"):
+    register_session_routes(main_mcp)
 
 
 @main_mcp.custom_route("/healthz", methods=["GET"], include_in_schema=False)

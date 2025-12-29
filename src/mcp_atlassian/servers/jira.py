@@ -7,11 +7,13 @@ from typing import Annotated, Any
 from fastmcp import Context, FastMCP
 from pydantic import Field
 from requests.exceptions import HTTPError
+from starlette.requests import Request
 
 from mcp_atlassian.exceptions import MCPAtlassianAuthenticationError
 from mcp_atlassian.jira.constants import DEFAULT_READ_JIRA_FIELDS
 from mcp_atlassian.models.jira.common import JiraUser
 from mcp_atlassian.servers.dependencies import get_jira_fetcher
+from mcp_atlassian.sessions.helpers import get_jira_client
 from mcp_atlassian.utils.decorators import check_write_access
 
 logger = logging.getLogger(__name__)
@@ -20,6 +22,16 @@ jira_mcp = FastMCP(
     name="Jira MCP Service",
     description="Provides tools for interacting with Atlassian Jira.",
 )
+
+# Helper to select session-aware or legacy fetcher
+async def get_session_aware_jira_fetcher(ctx: Context):
+    request = getattr(ctx, "request", None)
+    if request and hasattr(request.state, "session") and request.state.session:
+        try:
+            return get_jira_client(request)
+        except Exception as e:
+            logger.warning(f"Session-based Jira client failed: {e}, falling back to legacy fetcher.")
+    return await get_jira_fetcher(ctx)
 
 
 @jira_mcp.tool(tags={"jira", "read"})
@@ -45,7 +57,7 @@ async def get_user_profile(
     Raises:
         ValueError: If the Jira client is not configured or available.
     """
-    jira = await get_jira_fetcher(ctx)
+    jira = await get_session_aware_jira_fetcher(ctx)
     try:
         user: JiraUser = jira.get_user_profile_by_identifier(user_identifier)
         result = user.to_simplified_dict()
@@ -146,7 +158,7 @@ async def get_issue(
     Raises:
         ValueError: If the Jira client is not configured or available.
     """
-    jira = await get_jira_fetcher(ctx)
+    jira = await get_session_aware_jira_fetcher(ctx)
     fields_list: str | list[str] | None = fields
     if fields and fields != "*all":
         fields_list = [f.strip() for f in fields.split(",")]
@@ -233,7 +245,7 @@ async def search(
     Returns:
         JSON string representing the search results including pagination info.
     """
-    jira = await get_jira_fetcher(ctx)
+    jira = await get_session_aware_jira_fetcher(ctx)
     fields_list: str | list[str] | None = fields
     if fields and fields != "*all":
         fields_list = [f.strip() for f in fields.split(",")]
@@ -279,7 +291,7 @@ async def search_fields(
     Returns:
         JSON string representing a list of matching field definitions.
     """
-    jira = await get_jira_fetcher(ctx)
+    jira = await get_session_aware_jira_fetcher(ctx)
     result = jira.search_fields(keyword, limit=limit, refresh=refresh)
     return json.dumps(result, indent=2, ensure_ascii=False)
 
@@ -308,7 +320,7 @@ async def get_project_issues(
     Returns:
         JSON string representing the search results including pagination info.
     """
-    jira = await get_jira_fetcher(ctx)
+    jira = await get_session_aware_jira_fetcher(ctx)
     search_result = jira.get_project_issues(
         project_key=project_key, start=start_at, limit=limit
     )
@@ -330,7 +342,7 @@ async def get_transitions(
     Returns:
         JSON string representing a list of available transitions.
     """
-    jira = await get_jira_fetcher(ctx)
+    jira = await get_session_aware_jira_fetcher(ctx)
     # Underlying method returns list[dict] in the desired format
     transitions = jira.get_available_transitions(issue_key)
     return json.dumps(transitions, indent=2, ensure_ascii=False)
@@ -350,7 +362,7 @@ async def get_worklog(
     Returns:
         JSON string representing the worklog entries.
     """
-    jira = await get_jira_fetcher(ctx)
+    jira = await get_session_aware_jira_fetcher(ctx)
     worklogs = jira.get_worklogs(issue_key)
     result = {"worklogs": worklogs}
     return json.dumps(result, indent=2, ensure_ascii=False)
@@ -374,7 +386,7 @@ async def download_attachments(
     Returns:
         JSON string indicating the result of the download operation.
     """
-    jira = await get_jira_fetcher(ctx)
+    jira = await get_session_aware_jira_fetcher(ctx)
     result = jira.download_issue_attachments(issue_key=issue_key, target_dir=target_dir)
     return json.dumps(result, indent=2, ensure_ascii=False)
 
@@ -417,7 +429,7 @@ async def get_agile_boards(
     Returns:
         JSON string representing a list of board objects.
     """
-    jira = await get_jira_fetcher(ctx)
+    jira = await get_session_aware_jira_fetcher(ctx)
     boards = jira.get_all_agile_boards_model(
         board_name=board_name,
         project_key=project_key,
@@ -489,7 +501,7 @@ async def get_board_issues(
     Returns:
         JSON string representing the search results including pagination info.
     """
-    jira = await get_jira_fetcher(ctx)
+    jira = await get_session_aware_jira_fetcher(ctx)
     fields_list: str | list[str] | None = fields
     if fields and fields != "*all":
         fields_list = [f.strip() for f in fields.split(",")]
@@ -535,7 +547,7 @@ async def get_sprints_from_board(
     Returns:
         JSON string representing a list of sprint objects.
     """
-    jira = await get_jira_fetcher(ctx)
+    jira = await get_session_aware_jira_fetcher(ctx)
     sprints = jira.get_all_sprints_from_board_model(
         board_id=board_id, state=state, start=start_at, limit=limit
     )
@@ -579,7 +591,7 @@ async def get_sprint_issues(
     Returns:
         JSON string representing the search results including pagination info.
     """
-    jira = await get_jira_fetcher(ctx)
+    jira = await get_session_aware_jira_fetcher(ctx)
     fields_list: str | list[str] | None = fields
     if fields and fields != "*all":
         fields_list = [f.strip() for f in fields.split(",")]
@@ -601,7 +613,7 @@ async def get_link_types(ctx: Context) -> str:
     Returns:
         JSON string representing a list of issue link type objects.
     """
-    jira = await get_jira_fetcher(ctx)
+    jira = await get_session_aware_jira_fetcher(ctx)
     link_types = jira.get_issue_link_types()
     formatted_link_types = [link_type.to_simplified_dict() for link_type in link_types]
     return json.dumps(formatted_link_types, indent=2, ensure_ascii=False)
@@ -682,7 +694,7 @@ async def create_issue(
     Raises:
         ValueError: If in read-only mode or Jira client is unavailable.
     """
-    jira = await get_jira_fetcher(ctx)
+    jira = await get_session_aware_jira_fetcher(ctx)
     # Parse components from comma-separated string to list
     components_list = None
     if components and isinstance(components, str):
@@ -755,7 +767,7 @@ async def batch_create_issues(
     Raises:
         ValueError: If in read-only mode, Jira client unavailable, or invalid JSON.
     """
-    jira = await get_jira_fetcher(ctx)
+    jira = await get_session_aware_jira_fetcher(ctx)
     # Parse issues from JSON string
     try:
         issues_list = json.loads(issues)
@@ -825,7 +837,7 @@ async def batch_get_changelogs(
         NotImplementedError: If run on Jira Server/Data Center.
         ValueError: If Jira client is unavailable.
     """
-    jira = await get_jira_fetcher(ctx)
+    jira = await get_session_aware_jira_fetcher(ctx)
     # Ensure this runs only on Cloud, as per original function docstring
     if not jira.config.is_cloud:
         raise NotImplementedError(
@@ -900,7 +912,7 @@ async def update_issue(
     Raises:
         ValueError: If in read-only mode or Jira client unavailable, or invalid input.
     """
-    jira = await get_jira_fetcher(ctx)
+    jira = await get_session_aware_jira_fetcher(ctx)
     # Use fields directly as dict
     if not isinstance(fields, dict):
         raise ValueError("fields must be a dictionary.")
@@ -972,7 +984,7 @@ async def delete_issue(
     Raises:
         ValueError: If in read-only mode or Jira client unavailable.
     """
-    jira = await get_jira_fetcher(ctx)
+    jira = await get_session_aware_jira_fetcher(ctx)
     deleted = jira.delete_issue(issue_key)
     result = {"message": f"Issue {issue_key} has been deleted successfully."}
     # The underlying method raises on failure, so if we reach here, it's success.
@@ -999,7 +1011,7 @@ async def add_comment(
     Raises:
         ValueError: If in read-only mode or Jira client unavailable.
     """
-    jira = await get_jira_fetcher(ctx)
+    jira = await get_session_aware_jira_fetcher(ctx)
     # add_comment returns dict
     result = jira.add_comment(issue_key, comment)
     return json.dumps(result, indent=2, ensure_ascii=False)
@@ -1058,7 +1070,7 @@ async def add_worklog(
     Raises:
         ValueError: If in read-only mode or Jira client unavailable.
     """
-    jira = await get_jira_fetcher(ctx)
+    jira = await get_session_aware_jira_fetcher(ctx)
     # add_worklog returns dict
     worklog_result = jira.add_worklog(
         issue_key=issue_key,
@@ -1096,7 +1108,7 @@ async def link_to_epic(
     Raises:
         ValueError: If in read-only mode or Jira client unavailable.
     """
-    jira = await get_jira_fetcher(ctx)
+    jira = await get_session_aware_jira_fetcher(ctx)
     issue = jira.link_issue_to_epic(issue_key, epic_key)
     result = {
         "message": f"Issue {issue_key} has been linked to epic {epic_key}.",
@@ -1148,7 +1160,7 @@ async def create_issue_link(
     Raises:
         ValueError: If required fields are missing, invalid input, in read-only mode, or Jira client unavailable.
     """
-    jira = await get_jira_fetcher(ctx)
+    jira = await get_session_aware_jira_fetcher(ctx)
     if not all([link_type, inward_issue_key, outward_issue_key]):
         raise ValueError(
             "link_type, inward_issue_key, and outward_issue_key are required."
@@ -1226,7 +1238,7 @@ async def create_remote_issue_link(
     Raises:
         ValueError: If required fields are missing, invalid input, in read-only mode, or Jira client unavailable.
     """
-    jira = await get_jira_fetcher(ctx)
+    jira = await get_session_aware_jira_fetcher(ctx)
     if not issue_key:
         raise ValueError("issue_key is required.")
     if not url:
@@ -1273,7 +1285,7 @@ async def remove_issue_link(
     Raises:
         ValueError: If link_id is missing, in read-only mode, or Jira client unavailable.
     """
-    jira = await get_jira_fetcher(ctx)
+    jira = await get_session_aware_jira_fetcher(ctx)
     if not link_id:
         raise ValueError("link_id is required")
 
@@ -1331,7 +1343,7 @@ async def transition_issue(
     Raises:
         ValueError: If required fields missing, invalid input, in read-only mode, or Jira client unavailable.
     """
-    jira = await get_jira_fetcher(ctx)
+    jira = await get_session_aware_jira_fetcher(ctx)
     if not issue_key or not transition_id:
         raise ValueError("issue_key and transition_id are required.")
 
@@ -1388,7 +1400,7 @@ async def create_sprint(
     Raises:
         ValueError: If in read-only mode or Jira client unavailable.
     """
-    jira = await get_jira_fetcher(ctx)
+    jira = await get_session_aware_jira_fetcher(ctx)
     sprint = jira.create_sprint(
         board_id=board_id,
         sprint_name=sprint_name,
@@ -1438,7 +1450,7 @@ async def update_sprint(
     Raises:
         ValueError: If in read-only mode or Jira client unavailable.
     """
-    jira = await get_jira_fetcher(ctx)
+    jira = await get_session_aware_jira_fetcher(ctx)
     sprint = jira.update_sprint(
         sprint_id=sprint_id,
         sprint_name=sprint_name,
@@ -1463,7 +1475,7 @@ async def get_project_versions(
     project_key: Annotated[str, Field(description="Jira project key (e.g., 'PROJ')")],
 ) -> str:
     """Get all fix versions for a specific Jira project."""
-    jira = await get_jira_fetcher(ctx)
+    jira = await get_session_aware_jira_fetcher(ctx)
     versions = jira.get_project_versions(project_key)
     return json.dumps(versions, indent=2, ensure_ascii=False)
 
@@ -1494,7 +1506,7 @@ async def get_all_projects(
         ValueError: If the Jira client is not configured or available.
     """
     try:
-        jira = await get_jira_fetcher(ctx)
+        jira = await get_session_aware_jira_fetcher(ctx)
         projects = jira.get_all_projects(include_archived=include_archived)
     except (MCPAtlassianAuthenticationError, HTTPError, OSError, ValueError) as e:
         error_message = ""
@@ -1562,7 +1574,7 @@ async def create_version(
     Returns:
         JSON string of the created version object.
     """
-    jira = await get_jira_fetcher(ctx)
+    jira = await get_session_aware_jira_fetcher(ctx)
     try:
         version = jira.create_project_version(
             project_key=project_key,
@@ -1613,7 +1625,7 @@ async def batch_create_versions(
     Returns:
         JSON array of results, each with success flag, version or error.
     """
-    jira = await get_jira_fetcher(ctx)
+    jira = await get_session_aware_jira_fetcher(ctx)
     try:
         version_list = json.loads(versions)
         if not isinstance(version_list, list):
