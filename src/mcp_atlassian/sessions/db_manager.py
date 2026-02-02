@@ -1,20 +1,21 @@
-"""
-Async Redis session manager for MCP Atlassian.
+"""Async Redis session manager for MCP Atlassian.
 
 Handles session storage, retrieval, and expiry securely.
-
-Attributes:
-    redis_url (str): Redis connection URL.
-    db (int): Redis database index.
-    password (str | None): Redis password.
-    _pool (aioredis.Redis | None): Redis connection pool.
 """
-from typing import Any, Optional
-import os
+
 import json
-import asyncio
-import redis.asyncio as aioredis
 import logging
+import os
+from typing import Any
+
+try:
+    import redis.asyncio as aioredis
+except ModuleNotFoundError as e:  # pragma: no cover
+    raise ModuleNotFoundError(
+        "Missing Python dependency 'redis' (redis-py). "
+        "Install it with `uv sync --all-extras` (recommended) or `uv add redis`. "
+        "Note: this is separate from the Redis/Valkey *server* you run on port 6379."
+    ) from e
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +31,9 @@ class RedisManager:
         session_exists(session_id): Check if session exists.
         refresh_session(session_id, ttl): Refresh session TTL.
     """
-    def __init__(self, url: Optional[str] = None, db: int = 0, password: Optional[str] = None):
+    def __init__(
+        self, url: str | None = None, db: int = 0, password: str | None = None
+    ):
         """Initialize RedisManager.
 
         Args:
@@ -41,9 +44,16 @@ class RedisManager:
         self.redis_url = url or os.getenv("REDIS_URL", "redis://localhost:6379")
         self.db = db
         self.password = password or os.getenv("REDIS_PASSWORD")
-        self._pool: aioredis.Redis | None = None
+        # redis-py asyncio types are not consistently available across versions;
+        # keep this internal attribute loosely typed to avoid false-positive IDE errors.
+        self._pool: Any | None = None
 
-    async def connect(self):
+    def _get_pool(self) -> Any:
+        if self._pool is None:
+            raise RuntimeError("Redis pool not initialized. Call connect() first.")
+        return self._pool
+
+    async def connect(self) -> None:
         """Initialize Redis connection pool if not already connected. Raises on failure."""
         if not self._pool:
             try:
@@ -56,7 +66,7 @@ class RedisManager:
                     max_connections=10,
                 )
                 # Test connection
-                await self._pool.ping()
+                await self._get_pool().ping()
             except Exception as e:
                 logger.error(f"Failed to connect to Redis at {self.redis_url}: {e}")
                 raise
@@ -69,22 +79,24 @@ class RedisManager:
         """
         try:
             await self.connect()
-            pong = await self._pool.ping()
+            pong = await self._get_pool().ping()
             return pong is True or pong == "PONG"
         except Exception as e:
             logger.error(f"Redis health check failed: {e}")
             return False
 
-    async def close(self):
+    async def close(self) -> None:
         """Close Redis connection pool."""
         if self._pool:
             try:
-                await self._pool.close()
+                await self._get_pool().close()
             except Exception as e:
                 logger.warning(f"Error closing Redis connection: {e}")
             self._pool = None
 
-    async def set_session(self, session_id: str, data: dict[str, Any], ttl: int = 3600):
+    async def set_session(
+        self, session_id: str, data: dict[str, Any], ttl: int = 3600
+    ) -> None:
         """Store session data with TTL.
 
         Args:
@@ -94,9 +106,9 @@ class RedisManager:
         """
         await self.connect()
         value = json.dumps(data)
-        await self._pool.set(session_id, value, ex=ttl)
+        await self._get_pool().set(session_id, value, ex=ttl)
 
-    async def get_session(self, session_id: str) -> Optional[dict[str, Any]]:
+    async def get_session(self, session_id: str) -> dict[str, Any] | None:
         """Retrieve session data by ID.
 
         Args:
@@ -106,7 +118,7 @@ class RedisManager:
             dict or None: Session data if found, else None.
         """
         await self.connect()
-        value = await self._pool.get(session_id)
+        value = await self._get_pool().get(session_id)
         if value is None:
             return None
         try:
@@ -114,14 +126,14 @@ class RedisManager:
         except Exception:
             return None
 
-    async def delete_session(self, session_id: str):
+    async def delete_session(self, session_id: str) -> None:
         """Delete session by ID.
 
         Args:
             session_id (str): Session key.
         """
         await self.connect()
-        await self._pool.delete(session_id)
+        await self._get_pool().delete(session_id)
 
     async def session_exists(self, session_id: str) -> bool:
         """Check if session exists.
@@ -133,9 +145,9 @@ class RedisManager:
             bool: True if session exists, else False.
         """
         await self.connect()
-        return await self._pool.exists(session_id) == 1
+        return await self._get_pool().exists(session_id) == 1
 
-    async def refresh_session(self, session_id: str, ttl: int = 3600):
+    async def refresh_session(self, session_id: str, ttl: int = 3600) -> None:
         """Refresh session TTL.
 
         Args:
@@ -143,7 +155,7 @@ class RedisManager:
             ttl (int): New time-to-live in seconds. Defaults to 3600.
         """
         await self.connect()
-        await self._pool.expire(session_id, ttl)
+        await self._get_pool().expire(session_id, ttl)
 
 # Usage example (async):
 # redis_mgr = RedisManager()

@@ -231,6 +231,10 @@ def main(
 
     click_ctx = click.get_current_context(silent=True)
 
+    def set_env_if_value(key: str, value: str | None) -> None:
+        if value is not None:
+            os.environ[key] = value
+
     # Transport precedence
     final_transport = os.getenv("TRANSPORT", "stdio").lower()
     if click_ctx and was_option_provided(click_ctx, "transport"):
@@ -242,19 +246,37 @@ def main(
         final_transport = "stdio"
     logger.debug(f"Final transport determined: {final_transport}")
 
+    from typing import Any, Literal, cast
+
+    final_transport_typed = cast(
+        Literal["stdio", "sse", "streamable-http"], final_transport
+    )
+
+    # Keep environment in sync with the resolved CLI values.
+    # Some downstream components (e.g., TLS enforcement in the server lifespan)
+    # read these values from env.
+    os.environ["TRANSPORT"] = final_transport_typed
+
     # Port precedence
     final_port = 8000
-    if os.getenv("PORT") and os.getenv("PORT").isdigit():
-        final_port = int(os.getenv("PORT"))
+    env_port = os.getenv("PORT")
+    if env_port is not None and env_port.isdigit():
+        final_port = int(env_port)
     if click_ctx and was_option_provided(click_ctx, "port"):
         final_port = port
     logger.debug(f"Final port for HTTP transports: {final_port}")
+
+    # Keep environment in sync with the resolved CLI values.
+    os.environ["PORT"] = str(final_port)
 
     # Host precedence
     final_host = os.getenv("HOST", "0.0.0.0")  # noqa: S104
     if click_ctx and was_option_provided(click_ctx, "host"):
         final_host = host
     logger.debug(f"Final host for HTTP transports: {final_host}")
+
+    # Keep environment in sync with the resolved CLI values.
+    os.environ["HOST"] = final_host
 
     # Path precedence
     final_path: str | None = os.getenv("STREAMABLE_HTTP_PATH", None)
@@ -264,53 +286,55 @@ def main(
         f"Final path for Streamable HTTP: {final_path if final_path else 'FastMCP default'}"
     )
 
+    # Keep environment in sync with the resolved CLI values.
+    if final_path is not None:
+        os.environ["STREAMABLE_HTTP_PATH"] = final_path
+
     # Set env vars for downstream config
     if click_ctx and was_option_provided(click_ctx, "enabled_tools"):
-        os.environ["ENABLED_TOOLS"] = enabled_tools
+        set_env_if_value("ENABLED_TOOLS", enabled_tools)
     if click_ctx and was_option_provided(click_ctx, "confluence_url"):
-        os.environ["CONFLUENCE_URL"] = confluence_url
+        set_env_if_value("CONFLUENCE_URL", confluence_url)
     if click_ctx and was_option_provided(click_ctx, "confluence_username"):
-        os.environ["CONFLUENCE_USERNAME"] = confluence_username
+        set_env_if_value("CONFLUENCE_USERNAME", confluence_username)
     if click_ctx and was_option_provided(click_ctx, "confluence_token"):
-        os.environ["CONFLUENCE_API_TOKEN"] = confluence_token
+        set_env_if_value("CONFLUENCE_API_TOKEN", confluence_token)
     if click_ctx and was_option_provided(click_ctx, "confluence_personal_token"):
-        os.environ["CONFLUENCE_PERSONAL_TOKEN"] = confluence_personal_token
+        set_env_if_value("CONFLUENCE_PERSONAL_TOKEN", confluence_personal_token)
     if click_ctx and was_option_provided(click_ctx, "jira_url"):
-        os.environ["JIRA_URL"] = jira_url
+        set_env_if_value("JIRA_URL", jira_url)
     if click_ctx and was_option_provided(click_ctx, "jira_username"):
-        os.environ["JIRA_USERNAME"] = jira_username
+        set_env_if_value("JIRA_USERNAME", jira_username)
     if click_ctx and was_option_provided(click_ctx, "jira_token"):
-        os.environ["JIRA_API_TOKEN"] = jira_token
+        set_env_if_value("JIRA_API_TOKEN", jira_token)
     if click_ctx and was_option_provided(click_ctx, "jira_personal_token"):
-        os.environ["JIRA_PERSONAL_TOKEN"] = jira_personal_token
+        set_env_if_value("JIRA_PERSONAL_TOKEN", jira_personal_token)
     if click_ctx and was_option_provided(click_ctx, "oauth_client_id"):
-        os.environ["ATLASSIAN_OAUTH_CLIENT_ID"] = oauth_client_id
+        set_env_if_value("ATLASSIAN_OAUTH_CLIENT_ID", oauth_client_id)
     if click_ctx and was_option_provided(click_ctx, "oauth_client_secret"):
-        os.environ["ATLASSIAN_OAUTH_CLIENT_SECRET"] = oauth_client_secret
+        set_env_if_value("ATLASSIAN_OAUTH_CLIENT_SECRET", oauth_client_secret)
     if click_ctx and was_option_provided(click_ctx, "oauth_redirect_uri"):
-        os.environ["ATLASSIAN_OAUTH_REDIRECT_URI"] = oauth_redirect_uri
+        set_env_if_value("ATLASSIAN_OAUTH_REDIRECT_URI", oauth_redirect_uri)
     if click_ctx and was_option_provided(click_ctx, "oauth_scope"):
-        os.environ["ATLASSIAN_OAUTH_SCOPE"] = oauth_scope
+        set_env_if_value("ATLASSIAN_OAUTH_SCOPE", oauth_scope)
     if click_ctx and was_option_provided(click_ctx, "oauth_cloud_id"):
-        os.environ["ATLASSIAN_OAUTH_CLOUD_ID"] = oauth_cloud_id
+        set_env_if_value("ATLASSIAN_OAUTH_CLOUD_ID", oauth_cloud_id)
     if click_ctx and was_option_provided(click_ctx, "oauth_access_token"):
-        os.environ["ATLASSIAN_OAUTH_ACCESS_TOKEN"] = oauth_access_token
+        set_env_if_value("ATLASSIAN_OAUTH_ACCESS_TOKEN", oauth_access_token)
     if click_ctx and was_option_provided(click_ctx, "read_only"):
         os.environ["READ_ONLY_MODE"] = str(read_only).lower()
     if click_ctx and was_option_provided(click_ctx, "confluence_ssl_verify"):
         os.environ["CONFLUENCE_SSL_VERIFY"] = str(confluence_ssl_verify).lower()
     if click_ctx and was_option_provided(click_ctx, "confluence_spaces_filter"):
-        os.environ["CONFLUENCE_SPACES_FILTER"] = confluence_spaces_filter
+        set_env_if_value("CONFLUENCE_SPACES_FILTER", confluence_spaces_filter)
     if click_ctx and was_option_provided(click_ctx, "jira_ssl_verify"):
         os.environ["JIRA_SSL_VERIFY"] = str(jira_ssl_verify).lower()
     if click_ctx and was_option_provided(click_ctx, "jira_projects_filter"):
-        os.environ["JIRA_PROJECTS_FILTER"] = jira_projects_filter
+        set_env_if_value("JIRA_PROJECTS_FILTER", jira_projects_filter)
 
     from mcp_atlassian.servers import main_mcp
 
-    run_kwargs = {
-        "transport": final_transport,
-    }
+    run_kwargs: dict[str, Any] = {"transport": final_transport_typed}
 
     if final_transport == "stdio":
         logger.info("Starting server with STDIO transport.")
@@ -318,6 +342,26 @@ def main(
         run_kwargs["host"] = final_host
         run_kwargs["port"] = final_port
         run_kwargs["log_level"] = logging.getLevelName(current_logging_level).lower()
+
+        # TLS for HTTP transports is configured through Uvicorn.
+        # If TLS is enabled, provide cert/key (and optional CA) via uvicorn_config.
+        if is_env_truthy("MCP_TLS_ENABLED"):
+            cert_file = os.getenv("MCP_TLS_CERT_FILE")
+            key_file = os.getenv("MCP_TLS_KEY_FILE")
+            ca_file = os.getenv("MCP_TLS_CA_FILE")
+
+            uvicorn_config: dict[str, object] = {}
+            if cert_file:
+                uvicorn_config["ssl_certfile"] = cert_file
+            if key_file:
+                uvicorn_config["ssl_keyfile"] = key_file
+            if ca_file:
+                uvicorn_config["ssl_ca_certs"] = ca_file
+
+            # Only set uvicorn_config if we have at least one TLS setting.
+            # Enforcement of required fields (multi-user + HTTP) happens in server lifespan.
+            if uvicorn_config:
+                run_kwargs["uvicorn_config"] = uvicorn_config
 
         if final_path is not None:
             run_kwargs["path"] = final_path

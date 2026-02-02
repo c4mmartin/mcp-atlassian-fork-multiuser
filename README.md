@@ -849,8 +849,22 @@ To verify custom headers are being applied correctly:
 # Using MCP Inspector for testing
 npx @modelcontextprotocol/inspector uvx mcp-atlassian ...
 
-# For local development version
+# For local development version (run the server from a repo checkout)
+# NOTE: The inspector is a *client* for testing. It does not run the server by itself.
 npx @modelcontextprotocol/inspector uv --directory /path/to/your/mcp-atlassian run mcp-atlassian ...
+
+# Run WITHOUT Docker (start the server directly)
+# 1) Install deps from this repo
+uv sync --frozen --all-extras
+
+# 2) Start the server (stdio transport)
+uv run mcp-atlassian --env-file /path/to/.env -v
+
+# 3) Start the server (HTTP transport)
+uv run mcp-atlassian --env-file /path/to/.env --transport streamable-http --host 0.0.0.0 --port 9000 -v
+
+# If you prefer not to use `uv run`, you can also use the venv entrypoint:
+# ./.venv/bin/mcp-atlassian --env-file /path/to/.env --transport streamable-http --port 9000 -v
 
 # View logs
 # macOS
