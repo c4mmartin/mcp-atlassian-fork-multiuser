@@ -40,12 +40,23 @@ class TestMainTransportSelection:
         This is a regression test for issues #519 and #524.
         """
         with patch("mcp_atlassian.servers.main.AtlassianMCP", return_value=mock_server):
-            with patch.dict("os.environ", {"TRANSPORT": transport}):
+            with patch.dict(
+                "os.environ",
+                {
+                    "TRANSPORT": transport,
+                    # Keep tests hermetic: don't let developer env enforce TLS.
+                    "MCP_MULTIUSER": "0",
+                    "MCP_SESSIONS_ENABLED": "0",
+                    "MCP_TLS_ENABLED": "0",
+                    "MCP_ALLOW_INSECURE_HTTP": "0",
+                },
+            ):
                 with patch("sys.argv", ["mcp-atlassian"]):
-                    try:
-                        main()
-                    except SystemExit:
-                        pass
+                    with patch("mcp_atlassian.load_dotenv"):
+                        try:
+                            main()
+                        except SystemExit:
+                            pass
 
                     # Verify asyncio.run was called
                     assert mock_asyncio_run.called
@@ -61,13 +72,24 @@ class TestMainTransportSelection:
     def test_cli_overrides_env_transport(self, mock_server, mock_asyncio_run):
         """Test that CLI transport argument overrides environment variable."""
         with patch("mcp_atlassian.servers.main.AtlassianMCP", return_value=mock_server):
-            with patch.dict("os.environ", {"TRANSPORT": "sse"}):
+            with patch.dict(
+                "os.environ",
+                {
+                    "TRANSPORT": "sse",
+                    # Keep tests hermetic: don't let developer env enforce TLS.
+                    "MCP_MULTIUSER": "0",
+                    "MCP_SESSIONS_ENABLED": "0",
+                    "MCP_TLS_ENABLED": "0",
+                    "MCP_ALLOW_INSECURE_HTTP": "0",
+                },
+            ):
                 # Simulate CLI args with --transport stdio
                 with patch("sys.argv", ["mcp-atlassian", "--transport", "stdio"]):
-                    try:
-                        main()
-                    except SystemExit:
-                        pass
+                    with patch("mcp_atlassian.load_dotenv"):
+                        try:
+                            main()
+                        except SystemExit:
+                            pass
 
                     # All transports now use direct execution
                     called_coro = mock_asyncio_run._called_with
