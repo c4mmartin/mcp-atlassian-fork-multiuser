@@ -3,7 +3,7 @@
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, cast
 import os
 
 from cachetools import TTLCache
@@ -13,8 +13,9 @@ from mcp.types import Tool as MCPTool
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 
 from mcp_atlassian.confluence import ConfluenceFetcher
 from mcp_atlassian.confluence.config import ConfluenceConfig
@@ -40,13 +41,14 @@ async def health_check(request: Request) -> JSONResponse:
     return JSONResponse({"status": "ok"})
 
 
-def add_session_middleware(app):
-    """Add session token middleware if multi-user mode is enabled via env."""
-    if is_env_truthy("MCP_MULTIUSER") or is_env_truthy("MCP_SESSIONS_ENABLED"):
+def add_session_middleware(app: Starlette) -> None:
+    """Add server-issued session-token middleware when sessions mode is enabled."""
+    if is_env_truthy("MCP_SESSIONS_ENABLED"):
         app.add_middleware(SessionTokenMiddleware)
-        logger.info("SessionTokenMiddleware enabled (multi-user mode)")
-    else:
-        logger.info("SessionTokenMiddleware not enabled (single-user mode)")
+        logger.info("SessionTokenMiddleware enabled (sessions mode)")
+        return
+
+    logger.info("SessionTokenMiddleware not enabled")
 
 
 @asynccontextmanager
@@ -240,22 +242,48 @@ class AtlassianMCP(FastMCP[MainAppContext]):
         path: str | None = None,
         middleware: list[Middleware] | None = None,
         transport: Literal["streamable-http", "sse"] = "streamable-http",
-    ) -> "Starlette":
+    ) -> Any:
+        # Optionally enable CORS (primarily for browser-based clients like MCP Inspector).
+        # Disabled by default to preserve existing behavior and avoid widening exposure.
+        final_middleware_list: list[Middleware] = []
+        if is_env_truthy("MCP_CORS_ENABLED"):
+            raw_origins = os.getenv("MCP_CORS_ALLOW_ORIGINS", "*").strip()
+            allow_origins = ["*"] if raw_origins in ("", "*") else [
+                origin.strip() for origin in raw_origins.split(",") if origin.strip()
+            ]
+            final_middleware_list.append(
+                Middleware(
+                    CORSMiddleware,
+                    allow_origins=allow_origins,
+                    allow_methods=["*"],
+                    allow_headers=["*"],
+                    expose_headers=["mcp-session-id"],
+                    allow_credentials=False,
+                    max_age=600,
+                )
+            )
+            logger.info(
+                "CORS enabled for HTTP transports (MCP_CORS_ALLOW_ORIGINS=%s)",
+                raw_origins,
+            )
+
         # Always add UserTokenMiddleware for user token extraction
         user_token_mw = Middleware(UserTokenMiddleware, mcp_server_ref=self)
-        final_middleware_list = [user_token_mw]
+        final_middleware_list.append(user_token_mw)
         if middleware:
             final_middleware_list.extend(middleware)
         app = super().http_app(
             path=path, middleware=final_middleware_list, transport=transport
         )
 
-        # Add session token middleware only in multi-user mode
-        if is_env_truthy("MCP_MULTIUSER") or is_env_truthy("MCP_SESSIONS_ENABLED"):
+        # SessionTokenMiddleware enforces a server-issued session token (Bearer ...).
+        # This is only appropriate when the dedicated sessions feature is enabled.
+        # In MCP_MULTIUSER mode, we expect per-request user credentials via UserTokenMiddleware.
+        if is_env_truthy("MCP_SESSIONS_ENABLED"):
             app.add_middleware(SessionTokenMiddleware)
-            logger.info("SessionTokenMiddleware enabled (multi-user mode)")
+            logger.info("SessionTokenMiddleware enabled (sessions mode)")
         else:
-            logger.info("SessionTokenMiddleware not enabled (single-user mode)")
+            logger.info("SessionTokenMiddleware not enabled")
         return app
 
 
@@ -279,7 +307,7 @@ class UserTokenMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(
         self, request: Request, call_next: RequestResponseEndpoint
-    ) -> JSONResponse:
+    ) -> Response:
         logger.debug(
             f"UserTokenMiddleware.dispatch: ENTERED for request path='{request.url.path}', method='{request.method}'"
         )
@@ -385,7 +413,10 @@ class UserTokenMiddleware(BaseHTTPMiddleware):
 
 
 
-main_mcp = AtlassianMCP(name="Atlassian MCP", lifespan=main_lifespan)
+main_mcp = AtlassianMCP(
+    name="Atlassian MCP",
+    lifespan=cast(Any, main_lifespan),
+)
 main_mcp.mount("jira", jira_mcp)
 main_mcp.mount("confluence", confluence_mcp)
 if is_env_truthy("MCP_MULTIUSER") or is_env_truthy("MCP_SESSIONS_ENABLED"):

@@ -99,7 +99,7 @@ class JiraClient:
             )
             logger.debug(
                 f"Jira client initialized. Session headers (Authorization masked): "
-                f"{get_masked_session_headers(dict(self.jira._session.headers))}"
+                f"{get_masked_session_headers({k: str(v) for k, v in dict(self.jira._session.headers).items()})}"
             )
 
         # Configure SSL verification using the shared utility
@@ -170,7 +170,7 @@ class JiraClient:
             logger.error(error_msg)
             logger.debug(
                 f"Authentication headers during failure: "
-                f"{get_masked_session_headers(dict(self.jira._session.headers))}"
+                f"{get_masked_session_headers({k: str(v) for k, v in dict(self.jira._session.headers).items()})}"
             )
             raise MCPAtlassianAuthenticationError(error_msg) from e
 
@@ -288,9 +288,9 @@ class JiraClient:
         self,
         project: str,
         name: str,
-        start_date: str = None,
-        release_date: str = None,
-        description: str = None,
+        start_date: str | None = None,
+        release_date: str | None = None,
+        description: str | None = None,
     ) -> dict[str, Any]:
         """
         Create a new version in a Jira project.

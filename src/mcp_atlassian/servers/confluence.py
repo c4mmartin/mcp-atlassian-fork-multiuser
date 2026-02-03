@@ -10,7 +10,7 @@ from starlette.requests import Request
 
 from mcp_atlassian.exceptions import MCPAtlassianAuthenticationError
 from mcp_atlassian.servers.dependencies import get_confluence_fetcher
-from mcp_atlassian.sessions.helpers import get_confluence_client
+from mcp_atlassian.sessions.helpers import get_confluence_fetcher_from_session
 from mcp_atlassian.utils.decorators import (
     check_write_access,
 )
@@ -28,7 +28,7 @@ async def get_session_aware_confluence_fetcher(ctx: Context):
     request = getattr(ctx, "request", None)
     if request and hasattr(request.state, "session") and request.state.session:
         try:
-            return get_confluence_client(request)
+            return get_confluence_fetcher_from_session(request)
         except Exception as e:
             logger.warning(f"Session-based Confluence client failed: {e}, falling back to legacy fetcher.")
     return await get_confluence_fetcher(ctx)
@@ -581,7 +581,7 @@ async def update_page(
         title=title,
         body=content,
         is_minor_edit=is_minor_edit,
-        version_comment=version_comment,
+        version_comment=version_comment or "",
         is_markdown=is_markdown,
         parent_id=parent_id,
         enable_heading_anchors=enable_heading_anchors

@@ -13,7 +13,7 @@ from mcp_atlassian.exceptions import MCPAtlassianAuthenticationError
 from mcp_atlassian.jira.constants import DEFAULT_READ_JIRA_FIELDS
 from mcp_atlassian.models.jira.common import JiraUser
 from mcp_atlassian.servers.dependencies import get_jira_fetcher
-from mcp_atlassian.sessions.helpers import get_jira_client
+from mcp_atlassian.sessions.helpers import get_jira_fetcher_from_session
 from mcp_atlassian.utils.decorators import check_write_access
 
 logger = logging.getLogger(__name__)
@@ -28,7 +28,7 @@ async def get_session_aware_jira_fetcher(ctx: Context):
     request = getattr(ctx, "request", None)
     if request and hasattr(request.state, "session") and request.state.session:
         try:
-            return get_jira_client(request)
+            return get_jira_fetcher_from_session(request)
         except Exception as e:
             logger.warning(f"Session-based Jira client failed: {e}, falling back to legacy fetcher.")
     return await get_jira_fetcher(ctx)
@@ -502,14 +502,16 @@ async def get_board_issues(
         JSON string representing the search results including pagination info.
     """
     jira = await get_session_aware_jira_fetcher(ctx)
-    fields_list: str | list[str] | None = fields
-    if fields and fields != "*all":
-        fields_list = [f.strip() for f in fields.split(",")]
+    fields_param: str | None = fields
+    if fields_param and fields_param != "*all":
+        fields_param = ",".join(
+            [field.strip() for field in fields_param.split(",") if field.strip()]
+        )
 
     search_result = jira.get_board_issues(
         board_id=board_id,
         jql=jql,
-        fields=fields_list,
+        fields=fields_param,
         start=start_at,
         limit=limit,
         expand=expand,
@@ -592,12 +594,14 @@ async def get_sprint_issues(
         JSON string representing the search results including pagination info.
     """
     jira = await get_session_aware_jira_fetcher(ctx)
-    fields_list: str | list[str] | None = fields
-    if fields and fields != "*all":
-        fields_list = [f.strip() for f in fields.split(",")]
+    fields_param: str | None = fields
+    if fields_param and fields_param != "*all":
+        fields_param = ",".join(
+            [field.strip() for field in fields_param.split(",") if field.strip()]
+        )
 
     search_result = jira.get_sprint_issues(
-        sprint_id=sprint_id, fields=fields_list, start=start_at, limit=limit
+        sprint_id=sprint_id, fields=fields_param, start=start_at, limit=limit
     )
     result = search_result.to_simplified_dict()
     return json.dumps(result, indent=2, ensure_ascii=False)
@@ -711,7 +715,7 @@ async def create_issue(
         project_key=project_key,
         summary=summary,
         issue_type=issue_type,
-        description=description,
+        description=description or "",
         assignee=assignee,
         components=components_list,
         **extra_fields,
@@ -1173,7 +1177,7 @@ async def create_issue_link(
     }
 
     if comment:
-        comment_obj = {"body": comment}
+        comment_obj: dict[str, Any] = {"body": comment}
         if comment_visibility and isinstance(comment_visibility, dict):
             if "type" in comment_visibility and "value" in comment_visibility:
                 comment_obj["visibility"] = comment_visibility
@@ -1247,7 +1251,7 @@ async def create_remote_issue_link(
         raise ValueError("title is required.")
 
     # Build the remote link data structure
-    link_object = {
+    link_object: dict[str, Any] = {
         "url": url,
         "title": title,
     }
@@ -1258,7 +1262,7 @@ async def create_remote_issue_link(
     if icon_url:
         link_object["icon"] = {"url16x16": icon_url, "title": title}
 
-    link_data = {"object": link_object}
+    link_data: dict[str, Any] = {"object": link_object}
 
     if relationship:
         link_data["relationship"] = relationship
@@ -1641,7 +1645,7 @@ async def batch_create_versions(
 
     for idx, v in enumerate(version_list):
         # Defensive: ensure v is a dict and has a name
-        if not isinstance(v, dict) or not v.get("name"):
+        if not isinstance(v, dict) or not isinstance(v.get("name"), str) or not v.get("name"):
             results.append(
                 {
                     "success": False,
@@ -1650,12 +1654,24 @@ async def batch_create_versions(
             )
             continue
         try:
+            start_date = v.get("startDate")
+            if start_date is not None and not isinstance(start_date, str):
+                start_date = None
+
+            release_date = v.get("releaseDate")
+            if release_date is not None and not isinstance(release_date, str):
+                release_date = None
+
+            description = v.get("description")
+            if description is not None and not isinstance(description, str):
+                description = None
+
             version = jira.create_project_version(
                 project_key=project_key,
                 name=v["name"],
-                start_date=v.get("startDate"),
-                release_date=v.get("releaseDate"),
-                description=v.get("description"),
+                start_date=start_date,
+                release_date=release_date,
+                description=description,
             )
             results.append({"success": True, "version": version})
         except Exception as e:
