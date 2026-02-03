@@ -27,8 +27,19 @@ class TestMainTransportSelection:
     def mock_asyncio_run(self):
         """Mock asyncio.run to capture what coroutine is executed."""
         with patch("asyncio.run") as mock_run:
-            # Store the coroutine for inspection
-            mock_run.side_effect = lambda coro: setattr(mock_run, "_called_with", coro)
+            def _capture_and_close(coro):
+                # Store the coroutine for inspection, then close it.
+                # When we mock asyncio.run, the coroutine would otherwise never be
+                # awaited, which triggers noisy warnings during test teardown.
+                setattr(mock_run, "_called_with", coro)
+                try:
+                    coro.close()
+                except Exception:
+                    # Best-effort cleanup: closing should never fail, but don't
+                    # mask the test outcome if it does.
+                    pass
+
+            mock_run.side_effect = _capture_and_close
             yield mock_run
 
     @pytest.mark.parametrize("transport", ["stdio", "sse", "streamable-http"])
@@ -96,21 +107,20 @@ class TestMainTransportSelection:
                     coro_repr = repr(called_coro)
                     assert "run_async" in coro_repr or hasattr(called_coro, "cr_code")
 
-    def test_signal_handlers_always_setup(self, mock_server):
+    def test_signal_handlers_always_setup(self, mock_server, mock_asyncio_run):
         """Test that signal handlers are set up regardless of transport."""
         with patch("mcp_atlassian.servers.main.AtlassianMCP", return_value=mock_server):
-            with patch("asyncio.run"):
-                # Patch where it's imported in the main module
-                with patch("mcp_atlassian.setup_signal_handlers") as mock_setup:
-                    with patch.dict("os.environ", {"TRANSPORT": "stdio"}):
-                        with patch("sys.argv", ["mcp-atlassian"]):
-                            try:
-                                main()
-                            except SystemExit:
-                                pass
+            # Patch where it's imported in the main module
+            with patch("mcp_atlassian.setup_signal_handlers") as mock_setup:
+                with patch.dict("os.environ", {"TRANSPORT": "stdio"}):
+                    with patch("sys.argv", ["mcp-atlassian"]):
+                        try:
+                            main()
+                        except SystemExit:
+                            pass
 
-                            # Signal handlers should always be set up
-                            mock_setup.assert_called_once()
+                        # Signal handlers should always be set up
+                        mock_setup.assert_called_once()
 
     def test_error_handling_preserved(self, mock_server):
         """Test that error handling works correctly for all transports."""
@@ -124,8 +134,15 @@ class TestMainTransportSelection:
 
         with patch("mcp_atlassian.servers.main.AtlassianMCP", return_value=mock_server):
             with patch("asyncio.run") as mock_run:
-                # Simulate the exception propagating through asyncio.run
-                mock_run.side_effect = error
+                # Simulate the exception propagating through asyncio.run while still
+                # cleaning up the coroutine passed in.
+                def _close_then_raise(coro):
+                    try:
+                        coro.close()
+                    finally:
+                        raise error
+
+                mock_run.side_effect = _close_then_raise
 
                 with patch.dict("os.environ", {"TRANSPORT": "stdio"}):
                     with patch("sys.argv", ["mcp-atlassian"]):
