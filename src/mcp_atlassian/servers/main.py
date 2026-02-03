@@ -313,14 +313,17 @@ class AtlassianMCP(FastMCP[MainAppContext]):
                         return r
                 return None
 
-            def _forward_to_mounted_app(target_app: Any, mount_base: str) -> Any:
-                mount_base = mount_base.rstrip("/") or "/"
+            class _ForwardToMountedApp:
+                def __init__(self, target_app: Any, mount_base: str) -> None:
+                    self._target_app = target_app
+                    self._mount_base = mount_base.rstrip("/") or "/"
 
-                async def _asgi(scope: dict, receive: Any, send: Any) -> None:
-                    # Forward requests as if the target_app were mounted at mount_base.
-                    # This avoids Starlette's redirect_slashes behavior for `/mcp`.
+                async def __call__(self, scope: dict, receive: Any, send: Any) -> None:
+                    # Emulate Starlette's Mount forwarding, but normalize the remaining
+                    # path so `/mcp` is treated like `/mcp/`.
                     new_scope = dict(scope)
-                    path = new_scope.get("path", "")
+                    path = str(new_scope.get("path", ""))
+                    mount_base = self._mount_base
 
                     if path == mount_base:
                         remaining = "/"
@@ -331,18 +334,13 @@ class AtlassianMCP(FastMCP[MainAppContext]):
                     else:
                         remaining = "/"
 
-                    root_path = new_scope.get("root_path", "")
+                    root_path = str(new_scope.get("root_path", ""))
                     new_scope["root_path"] = root_path + mount_base
                     new_scope["path"] = remaining
                     if "raw_path" in new_scope:
-                        try:
-                            new_scope["raw_path"] = remaining.encode("utf-8")
-                        except Exception:
-                            pass
+                        new_scope["raw_path"] = remaining.encode("utf-8")
 
-                    await target_app(new_scope, receive, send)
-
-                return _asgi
+                    await self._target_app(new_scope, receive, send)
 
             base_route = _find_route(base_path)
             slash_route = _find_route(slash_path)
@@ -350,60 +348,42 @@ class AtlassianMCP(FastMCP[MainAppContext]):
             # FastMCP currently produces both a `Mount(/mcp)` and a `Route(/mcp/)`.
             # Requests to `/mcp` can be handled by the Mount and redirected to `/mcp/`,
             # which is harmful for clients because auth headers may not be preserved.
-            # Shadow the Mount with an explicit Route at the same path.
+            # Shadow the Mount with an explicit Route at `/mcp` that forwards into the
+            # mounted ASGI app and avoids redirect_slashes.
             if isinstance(base_route, Mount) and base_path != "/":
                 app.routes.insert(
                     0,
                     Route(
                         base_path,
-                        _forward_to_mounted_app(base_route.app, base_path),
-                        methods=None,
+                        _ForwardToMountedApp(base_route.app, base_path),
+                        methods=["GET", "HEAD", "POST", "OPTIONS"],
                         name=getattr(base_route, "name", None),
-                        include_in_schema=getattr(
-                            base_route, "include_in_schema", True
-                        ),
+                        include_in_schema=getattr(base_route, "include_in_schema", True),
                     ),
                 )
-                # Treat the base path as present after adding the shadow route.
                 base_route = _find_route(base_path)
 
-            # If only one variant exists, add the missing alias.
-            if base_route is None and slash_route is not None:
-                if isinstance(slash_route, Mount):
-                    endpoint = _forward_to_mounted_app(slash_route.app, base_path)
-                    methods = None
-                else:
-                    endpoint = slash_route.endpoint
-                    methods = slash_route.methods
+            # Keep the older alias logic for non-mount cases.
+            if base_route is None and isinstance(slash_route, Route):
                 app.routes.insert(
                     0,
                     Route(
                         base_path,
-                        endpoint,
-                        methods=methods,
+                        slash_route.endpoint,
+                        methods=slash_route.methods,
                         name=getattr(slash_route, "name", None),
-                        include_in_schema=getattr(
-                            slash_route, "include_in_schema", True
-                        ),
+                        include_in_schema=getattr(slash_route, "include_in_schema", True),
                     ),
                 )
-            elif slash_route is None and base_route is not None and base_path != "/":
-                if isinstance(base_route, Mount):
-                    endpoint = _forward_to_mounted_app(base_route.app, base_path)
-                    methods = None
-                else:
-                    endpoint = base_route.endpoint
-                    methods = base_route.methods
+            elif slash_route is None and isinstance(base_route, Route) and base_path != "/":
                 app.routes.insert(
                     0,
                     Route(
                         slash_path,
-                        endpoint,
-                        methods=methods,
+                        base_route.endpoint,
+                        methods=base_route.methods,
                         name=getattr(base_route, "name", None),
-                        include_in_schema=getattr(
-                            base_route, "include_in_schema", True
-                        ),
+                        include_in_schema=getattr(base_route, "include_in_schema", True),
                     ),
                 )
 

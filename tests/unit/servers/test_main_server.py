@@ -1,13 +1,61 @@
 """Tests for the main MCP server implementation."""
 
+from contextlib import asynccontextmanager
+
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import anyio
 import httpx
 import pytest
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from mcp_atlassian.servers.main import UserTokenMiddleware, main_mcp
+
+
+@asynccontextmanager
+async def lifespan_started(app):
+    """Manually run ASGI lifespan for apps under httpx.ASGITransport.
+
+    Our pinned httpx may not manage lifespan automatically.
+    """
+    to_app_send, to_app_receive = anyio.create_memory_object_stream(10)
+    from_app_send, from_app_receive = anyio.create_memory_object_stream(10)
+
+    async def _receive():
+        return await to_app_receive.receive()
+
+    async def _send(message):
+        await from_app_send.send(message)
+
+    scope = {"type": "lifespan", "asgi": {"version": "3.0"}}
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(app, scope, _receive, _send)
+
+        await to_app_send.send({"type": "lifespan.startup"})
+        while True:
+            message = await from_app_receive.receive()
+            if message["type"] == "lifespan.startup.complete":
+                break
+            if message["type"] == "lifespan.startup.failed":
+                raise RuntimeError(
+                    f"Lifespan startup failed: {message.get('message', '')}"
+                )
+
+        try:
+            yield
+        finally:
+            await to_app_send.send({"type": "lifespan.shutdown"})
+            while True:
+                message = await from_app_receive.receive()
+                if message["type"] == "lifespan.shutdown.complete":
+                    break
+                if message["type"] == "lifespan.shutdown.failed":
+                    raise RuntimeError(
+                        f"Lifespan shutdown failed: {message.get('message', '')}"
+                    )
+            tg.cancel_scope.cancel()
 
 
 @pytest.mark.anyio
@@ -97,30 +145,35 @@ async def test_streamable_http_app_mcp_path_no_redirect():
     Redirects are problematic for clients because auth headers may not be preserved.
     """
     app = main_mcp.streamable_http_app()
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(
-        transport=transport, base_url="http://test", follow_redirects=False
-    ) as client:
-        response = await client.post(
-            "/mcp",
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json, text/event-stream",
-            },
-            json={
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {},
-                    "clientInfo": {"name": "pytest", "version": "0"},
+    async with lifespan_started(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test", follow_redirects=False
+        ) as client:
+            response = await client.post(
+                "/mcp",
+                headers={
+                    "Content-Type": "application/json",
+                    # Keep this test on the JSON response path.
+                    # The SSE code path relies on asyncio loop primitives and can
+                    # fail under the Trio anyio backend in unit tests.
+                    "Accept": "application/json",
                 },
-            },
-        )
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {},
+                        "clientInfo": {"name": "pytest", "version": "0"},
+                    },
+                },
+            )
 
-        assert response.status_code != 307
-        assert "location" not in response.headers
+            assert response.status_code != 307
+            assert response.status_code != 405
+            assert "location" not in response.headers
 
 
 class TestUserTokenMiddleware:
