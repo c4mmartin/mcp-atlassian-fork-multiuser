@@ -73,15 +73,24 @@ class UsersMixin(JiraClient):
             return account_id
         except HTTPError as http_err:
             response_content = ""
+            status_code = None
             if http_err.response is not None:
                 try:
                     response_content = http_err.response.text
                 except Exception:
                     response_content = "(could not decode response content)"
+                try:
+                    status_code = http_err.response.status_code
+                except Exception:
+                    status_code = None
             logger.error(
                 f"HTTPError getting current user account ID: {http_err}. Response: {response_content[:500]}"
             )
-            error_msg = f"Unable to get current user account ID: {http_err}"
+            status_part = f"status={status_code}" if status_code is not None else "status=unknown"
+            error_msg = (
+                f"Unable to get current user account ID ({status_part}): {http_err}. "
+                f"Response: {response_content[:500]}"
+            )
             raise Exception(error_msg) from http_err
         except Exception as e:
             logger.error(f"Error getting current user account ID: {e}", exc_info=True)
