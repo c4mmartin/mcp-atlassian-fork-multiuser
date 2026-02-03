@@ -60,6 +60,7 @@ See `.env.example` for all TLS-related options.
 - In sessions mode, requests to `/mcp` must send the server-issued token in `Authorization: Bearer <session_token>`.
 - `MCP_MULTIUSER=true` by itself enables user-token extraction (e.g., `Authorization: Token <PAT>`) but does not enforce session tokens.
 - Credentials are validated at login and never stored globally.
+- For HTTP transports (SSE/streamable-http), tool handlers should not rely on `ctx.request` always being present. If you need access to the Starlette `Request` (and `request.state.session`), use FastMCP's `fastmcp.server.dependencies.get_http_request()`.
 - Sessions expire automatically after TTL or can be explicitly invalidated via logout.
 
 ---

@@ -5,6 +5,7 @@ import logging
 from typing import Annotated
 
 from fastmcp import Context, FastMCP
+from fastmcp.server.dependencies import get_http_request
 from pydantic import BeforeValidator, Field
 from starlette.requests import Request
 
@@ -26,11 +27,19 @@ confluence_mcp = FastMCP(
 # Helper to select session-aware or legacy fetcher
 async def get_session_aware_confluence_fetcher(ctx: Context):
     request = getattr(ctx, "request", None)
+    if request is None:
+        try:
+            request = get_http_request()
+        except RuntimeError:
+            request = None
     if request and hasattr(request.state, "session") and request.state.session:
         try:
             return get_confluence_fetcher_from_session(request)
         except Exception as e:
-            logger.warning(f"Session-based Confluence client failed: {e}, falling back to legacy fetcher.")
+            logger.warning(
+                "Session-based Confluence client failed: %s, falling back to legacy fetcher.",
+                e,
+            )
     return await get_confluence_fetcher(ctx)
 
 

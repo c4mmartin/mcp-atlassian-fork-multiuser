@@ -5,6 +5,7 @@ import logging
 from typing import Annotated, Any
 
 from fastmcp import Context, FastMCP
+from fastmcp.server.dependencies import get_http_request
 from pydantic import Field
 from requests.exceptions import HTTPError
 from starlette.requests import Request
@@ -26,11 +27,19 @@ jira_mcp = FastMCP(
 # Helper to select session-aware or legacy fetcher
 async def get_session_aware_jira_fetcher(ctx: Context):
     request = getattr(ctx, "request", None)
+    if request is None:
+        try:
+            request = get_http_request()
+        except RuntimeError:
+            request = None
     if request and hasattr(request.state, "session") and request.state.session:
         try:
             return get_jira_fetcher_from_session(request)
         except Exception as e:
-            logger.warning(f"Session-based Jira client failed: {e}, falling back to legacy fetcher.")
+            logger.warning(
+                "Session-based Jira client failed: %s, falling back to legacy fetcher.",
+                e,
+            )
     return await get_jira_fetcher(ctx)
 
 
