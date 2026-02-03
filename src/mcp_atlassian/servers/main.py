@@ -226,6 +226,9 @@ class AtlassianMCP(FastMCP[MainAppContext]):
         )
 
         filtered_tools: list[MCPTool] = []
+        multiuser_enabled = is_env_truthy("MCP_MULTIUSER") or is_env_truthy(
+            "MCP_SESSIONS_ENABLED"
+        )
         for registered_name, tool_obj in all_tools.items():
             tool_tags = tool_obj.tags
 
@@ -244,12 +247,20 @@ class AtlassianMCP(FastMCP[MainAppContext]):
             is_confluence_tool = "confluence" in tool_tags
             service_configured_and_available = True
             if app_lifespan_state:
-                if is_jira_tool and not app_lifespan_state.full_jira_config:
+                if (
+                    not multiuser_enabled
+                    and is_jira_tool
+                    and not app_lifespan_state.full_jira_config
+                ):
                     logger.debug(
                         f"Excluding Jira tool '{registered_name}' as Jira configuration/authentication is incomplete."
                     )
                     service_configured_and_available = False
-                if is_confluence_tool and not app_lifespan_state.full_confluence_config:
+                if (
+                    not multiuser_enabled
+                    and is_confluence_tool
+                    and not app_lifespan_state.full_confluence_config
+                ):
                     logger.debug(
                         f"Excluding Confluence tool '{registered_name}' as Confluence configuration/authentication is incomplete."
                     )
