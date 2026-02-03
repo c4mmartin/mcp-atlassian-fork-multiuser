@@ -1,4 +1,5 @@
 # Session API Endpoints (Living Docs)
+
 ---
 
 ## TLS/HTTPS Enforcement (Multi-User Mode)
@@ -21,7 +22,9 @@ If these are missing, the server will log an error and refuse to start in multi-
 - TLS/HTTPS is mandatory for production and multi-user deployments. Running without TLS is only allowed for local development or single-user mode, and will log a warning.
 
 See `.env.example` for all TLS-related options.
+
 ## /session/login
+
 - **Method:** POST
 - **Description:** Create a new session by submitting Jira/Confluence credentials. Returns a session token for use in subsequent requests.
 - **Request Body (JSON):**
@@ -38,6 +41,7 @@ See `.env.example` for all TLS-related options.
   - 401: Credential validation failed
 
 ## /session/logout
+
 - **Method:** POST
 - **Description:** Invalidate the current session by deleting it from Redis. Requires session token in Authorization header.
 - **Headers:**
@@ -50,8 +54,11 @@ See `.env.example` for all TLS-related options.
 ---
 
 ## Notes
+
 - No user accounts are created or managed—sessions are stateless and only store credentials for the session lifetime.
-- Session tokens must be sent in the Authorization header as `Bearer <token>` for all authenticated requests.
+- Sessions mode is enabled with `MCP_SESSIONS_ENABLED=true`.
+- In sessions mode, requests to `/mcp` must send the server-issued token in `Authorization: Bearer <session_token>`.
+- `MCP_MULTIUSER=true` by itself enables user-token extraction (e.g., `Authorization: Token <PAT>`) but does not enforce session tokens.
 - Credentials are validated at login and never stored globally.
 - Sessions expire automatically after TTL or can be explicitly invalidated via logout.
 

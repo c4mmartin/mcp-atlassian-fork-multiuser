@@ -4,7 +4,7 @@ import re
 from urllib.parse import urlparse
 
 
-def is_atlassian_cloud_url(url: str) -> bool:
+def is_atlassian_cloud_url(url: str | None) -> bool:
     """Determine if a URL belongs to Atlassian Cloud or Server/Data Center.
 
     Args:

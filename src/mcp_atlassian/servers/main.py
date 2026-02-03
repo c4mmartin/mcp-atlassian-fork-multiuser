@@ -117,7 +117,16 @@ async def main_lifespan(app: FastMCP[MainAppContext]) -> AsyncIterator[dict]:
                     )
         except Exception as e:
             if multiuser_enabled:
-                logger.info(f"Multi-user mode enabled: Jira global credentials not required. ({e})")
+                try:
+                    loaded_jira_config = JiraConfig.from_env_multiuser_base()
+                    logger.info(
+                        "Multi-user mode enabled: loaded Jira base configuration (URL/SSL/proxy) without global credentials."
+                    )
+                except Exception as base_e:
+                    logger.error(
+                        f"Failed to load Jira base configuration in multi-user mode: {base_e}",
+                        exc_info=True,
+                    )
             else:
                 logger.error(f"Failed to load Jira configuration: {e}", exc_info=True)
 
@@ -138,7 +147,16 @@ async def main_lifespan(app: FastMCP[MainAppContext]) -> AsyncIterator[dict]:
                     )
         except Exception as e:
             if multiuser_enabled:
-                logger.info(f"Multi-user mode enabled: Confluence global credentials not required. ({e})")
+                try:
+                    loaded_confluence_config = ConfluenceConfig.from_env_multiuser_base()
+                    logger.info(
+                        "Multi-user mode enabled: loaded Confluence base configuration (URL/SSL/proxy) without global credentials."
+                    )
+                except Exception as base_e:
+                    logger.error(
+                        f"Failed to load Confluence base configuration in multi-user mode: {base_e}",
+                        exc_info=True,
+                    )
             else:
                 logger.error(f"Failed to load Confluence configuration: {e}", exc_info=True)
 

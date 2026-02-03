@@ -81,6 +81,11 @@ class ConfluenceConfig:
             error_msg = "Missing required CONFLUENCE_URL environment variable"
             raise ValueError(error_msg)
 
+        # In OAuth-only (cloud) mode, a site URL may be omitted; the API base is
+        # derived from cloud_id and uses api.atlassian.com.
+        if not url:
+            url = "https://api.atlassian.com"
+
         # Determine authentication type based on available environment variables
         username = os.getenv("CONFLUENCE_USERNAME")
         api_token = os.getenv("CONFLUENCE_API_TOKEN")
@@ -88,19 +93,23 @@ class ConfluenceConfig:
 
         # Check for OAuth configuration
         oauth_config = get_oauth_config_from_env()
-        auth_type = None
 
         # Use the shared utility function directly
         is_cloud = is_atlassian_cloud_url(url)
 
         if oauth_config:
-            # OAuth is available - could be full config or minimal config for user-provided tokens
-            auth_type = "oauth"
+            # OAuth is available - could be full config or minimal config for
+            # user-provided tokens.
+            auth_type: Literal["basic", "pat", "oauth"] = "oauth"
         elif is_cloud:
             if username and api_token:
                 auth_type = "basic"
             else:
-                error_msg = "Cloud authentication requires CONFLUENCE_USERNAME and CONFLUENCE_API_TOKEN, or OAuth configuration (set ATLASSIAN_OAUTH_ENABLE=true for user-provided tokens)"
+                error_msg = (
+                    "Cloud authentication requires CONFLUENCE_USERNAME and "
+                    "CONFLUENCE_API_TOKEN, or OAuth configuration (set "
+                    "ATLASSIAN_OAUTH_ENABLE=true for user-provided tokens)"
+                )
                 raise ValueError(error_msg)
         else:  # Server/Data Center
             if personal_token:
@@ -109,7 +118,11 @@ class ConfluenceConfig:
                 # Allow basic auth for Server/DC too
                 auth_type = "basic"
             else:
-                error_msg = "Server/Data Center authentication requires CONFLUENCE_PERSONAL_TOKEN or CONFLUENCE_USERNAME and CONFLUENCE_API_TOKEN"
+                error_msg = (
+                    "Server/Data Center authentication requires "
+                    "CONFLUENCE_PERSONAL_TOKEN or CONFLUENCE_USERNAME and "
+                    "CONFLUENCE_API_TOKEN"
+                )
                 raise ValueError(error_msg)
 
         # SSL verification (for Server/DC)
@@ -143,8 +156,64 @@ class ConfluenceConfig:
             custom_headers=custom_headers,
         )
 
+    @classmethod
+    def from_env_multiuser_base(cls) -> "ConfluenceConfig":
+        """Create a *base* ConfluenceConfig for multi-user mode without requiring auth.
+
+        This is used when credentials come from per-request headers (MCP_MULTIUSER)
+        or from server-managed sessions (MCP_SESSIONS_ENABLED).
+
+        The returned config is suitable as a template for user-specific configs.
+
+        Raises:
+            ValueError: If CONFLUENCE_URL is missing.
+        """
+        url = os.getenv("CONFLUENCE_URL")
+        if not url:
+            raise ValueError("Missing required CONFLUENCE_URL environment variable")
+
+        username = os.getenv("CONFLUENCE_USERNAME")
+        api_token = os.getenv("CONFLUENCE_API_TOKEN")
+        personal_token = os.getenv("CONFLUENCE_PERSONAL_TOKEN")
+        oauth_config = get_oauth_config_from_env()
+
+        is_cloud = is_atlassian_cloud_url(url)
+
+        if oauth_config:
+            auth_type: Literal["basic", "pat", "oauth"] = "oauth"
+        elif is_cloud:
+            auth_type = "basic"
+        else:
+            auth_type = "pat"
+            if username and api_token:
+                auth_type = "basic"
+
+        ssl_verify = is_env_ssl_verify("CONFLUENCE_SSL_VERIFY")
+        spaces_filter = os.getenv("CONFLUENCE_SPACES_FILTER")
+        http_proxy = os.getenv("CONFLUENCE_HTTP_PROXY", os.getenv("HTTP_PROXY"))
+        https_proxy = os.getenv("CONFLUENCE_HTTPS_PROXY", os.getenv("HTTPS_PROXY"))
+        no_proxy = os.getenv("CONFLUENCE_NO_PROXY", os.getenv("NO_PROXY"))
+        socks_proxy = os.getenv("CONFLUENCE_SOCKS_PROXY", os.getenv("SOCKS_PROXY"))
+        custom_headers = get_custom_headers("CONFLUENCE_CUSTOM_HEADERS")
+
+        return cls(
+            url=url,
+            auth_type=auth_type,
+            username=username,
+            api_token=api_token,
+            personal_token=personal_token,
+            oauth_config=oauth_config,
+            ssl_verify=ssl_verify,
+            spaces_filter=spaces_filter,
+            http_proxy=http_proxy,
+            https_proxy=https_proxy,
+            no_proxy=no_proxy,
+            socks_proxy=socks_proxy,
+            custom_headers=custom_headers,
+        )
+
     def is_auth_configured(self) -> bool:
-        """Check if the current authentication configuration is complete and valid for making API calls.
+        """Check if the current auth configuration is complete for API calls.
 
         Returns:
             bool: True if authentication is fully configured, False otherwise.
@@ -164,14 +233,16 @@ class ConfluenceConfig:
                     ):
                         return True
                     # Minimal OAuth configuration (user-provided tokens mode)
-                    # This is valid if we have oauth_config but missing client credentials
-                    # In this case, we expect authentication to come from user-provided headers
+                    # This is valid if we have oauth_config but missing client
+                    # credentials. In this case, we expect authentication to come
+                    # from user-provided headers.
                     elif (
                         not self.oauth_config.client_id
                         and not self.oauth_config.client_secret
                     ):
                         logger.debug(
-                            "Minimal OAuth config detected - expecting user-provided tokens via headers"
+                            "Minimal OAuth config detected - expecting user-provided "
+                            "tokens via headers"
                         )
                         return True
                 # Bring Your Own Access Token mode
