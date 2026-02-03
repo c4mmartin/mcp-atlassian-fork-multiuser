@@ -343,6 +343,28 @@ def main(
         run_kwargs["port"] = final_port
         run_kwargs["log_level"] = logging.getLevelName(current_logging_level).lower()
 
+        # Fail fast: multi-user HTTP should not run without TLS by default.
+        multiuser_enabled = is_env_truthy("MCP_MULTIUSER") or is_env_truthy(
+            "MCP_SESSIONS_ENABLED"
+        )
+        allow_insecure_http = is_env_truthy("MCP_ALLOW_INSECURE_HTTP")
+        if multiuser_enabled and not allow_insecure_http:
+            if not is_env_truthy("MCP_TLS_ENABLED"):
+                logger.error(
+                    "TLS is REQUIRED for multi-user HTTP mode. Set MCP_TLS_ENABLED=true and provide cert/key files."
+                )
+                sys.exit(1)
+            if not os.getenv("MCP_TLS_CERT_FILE") or not os.getenv("MCP_TLS_KEY_FILE"):
+                logger.error(
+                    "TLS cert/key files are required for multi-user HTTP mode. Set MCP_TLS_CERT_FILE and MCP_TLS_KEY_FILE."
+                )
+                sys.exit(1)
+        elif multiuser_enabled and allow_insecure_http:
+            logger.warning(
+                "MCP_ALLOW_INSECURE_HTTP=true: allowing multi-user HTTP without TLS. "
+                "This is insecure and should only be used on trusted networks."
+            )
+
         # TLS for HTTP transports is configured through Uvicorn.
         # If TLS is enabled, provide cert/key (and optional CA) via uvicorn_config.
         if is_env_truthy("MCP_TLS_ENABLED"):

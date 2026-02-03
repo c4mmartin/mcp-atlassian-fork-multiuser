@@ -16,6 +16,7 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
+from starlette.routing import Route
 
 from mcp_atlassian.confluence import ConfluenceFetcher
 from mcp_atlassian.confluence.config import ConfluenceConfig
@@ -35,6 +36,39 @@ from .context import MainAppContext
 from .jira import jira_mcp
 
 logger = logging.getLogger("mcp-atlassian.server.main")
+
+
+def _enforce_tls_for_multiuser_http(transport: str) -> None:
+    multiuser_enabled = is_env_truthy("MCP_MULTIUSER", "0") or is_env_truthy(
+        "MCP_SESSIONS_ENABLED", "0"
+    )
+    if not multiuser_enabled:
+        return
+
+    if transport not in ("sse", "streamable-http"):
+        return
+
+    # Escape hatch for controlled environments (e.g., internal-only networks).
+    if is_env_truthy("MCP_ALLOW_INSECURE_HTTP"):
+        logger.warning(
+            "MCP_ALLOW_INSECURE_HTTP=true: allowing multi-user HTTP without TLS. "
+            "This is insecure and should not be used on untrusted networks."
+        )
+        return
+
+    tls_enabled = is_env_truthy("MCP_TLS_ENABLED", "0")
+    cert_file = os.getenv("MCP_TLS_CERT_FILE", "")
+    key_file = os.getenv("MCP_TLS_KEY_FILE", "")
+    if not tls_enabled:
+        raise RuntimeError(
+            "TLS is required for multi-user HTTP transport. "
+            "Set MCP_TLS_ENABLED=true (and provide cert/key), or disable multi-user."
+        )
+    if not cert_file or not key_file:
+        raise RuntimeError(
+            "TLS cert/key files are required for multi-user HTTP transport. "
+            "Set MCP_TLS_CERT_FILE and MCP_TLS_KEY_FILE."
+        )
 
 
 async def health_check(request: Request) -> JSONResponse:
@@ -61,29 +95,10 @@ async def main_lifespan(app: FastMCP[MainAppContext]) -> AsyncIterator[dict]:
     loaded_jira_config: JiraConfig | None = None
     loaded_confluence_config: ConfluenceConfig | None = None
 
-    # --- TLS Enforcement Logic ---
-    multiuser_enabled = is_env_truthy("MCP_MULTIUSER", "0") or is_env_truthy("MCP_SESSIONS_ENABLED", "0")
-    tls_enabled = is_env_truthy("MCP_TLS_ENABLED", "0")
-    cert_file = os.getenv("MCP_TLS_CERT_FILE", "")
-    key_file = os.getenv("MCP_TLS_KEY_FILE", "")
-    ca_file = os.getenv("MCP_TLS_CA_FILE", "")
-    transport_mode = os.getenv("TRANSPORT", "stdio")
-
-    # Only enforce TLS for HTTP transports in multi-user mode
-    if multiuser_enabled and transport_mode in ("sse", "streamable-http"):
-        if not tls_enabled:
-            logger.error("TLS is REQUIRED for multi-user HTTP mode. Set MCP_TLS_ENABLED=true and provide cert/key files.")
-            raise RuntimeError("TLS is required for multi-user HTTP transport. Refusing to start.")
-        if not cert_file or not key_file:
-            logger.error("TLS cert/key files are required for multi-user HTTP mode. Set MCP_TLS_CERT_FILE and MCP_TLS_KEY_FILE.")
-            raise RuntimeError("TLS cert/key files missing. Refusing to start in multi-user HTTP mode.")
-        logger.info(f"TLS enforcement: MCP_TLS_ENABLED={tls_enabled}, cert={cert_file}, key={key_file}, ca={ca_file}")
-    elif not tls_enabled and transport_mode in ("sse", "streamable-http"):
-        logger.warning("TLS is DISABLED for HTTP transport. This is insecure and should only be used for local development or single-user mode.")
-    # End TLS enforcement logic
-
     # If multi-user mode is enabled, allow missing global credentials
-    multiuser_enabled = is_env_truthy("MCP_MULTIUSER") or is_env_truthy("MCP_SESSIONS_ENABLED")
+    multiuser_enabled = is_env_truthy("MCP_MULTIUSER") or is_env_truthy(
+        "MCP_SESSIONS_ENABLED"
+    )
 
     if services.get("jira"):
         try:
@@ -243,6 +258,10 @@ class AtlassianMCP(FastMCP[MainAppContext]):
         middleware: list[Middleware] | None = None,
         transport: Literal["streamable-http", "sse"] = "streamable-http",
     ) -> Any:
+        # Fail fast: enforce TLS requirements before the ASGI app starts.
+        # (FastMCP's lifespan may not run until the first client connects.)
+        _enforce_tls_for_multiuser_http(transport)
+
         # Optionally enable CORS (primarily for browser-based clients like MCP Inspector).
         # Disabled by default to preserve existing behavior and avoid widening exposure.
         final_middleware_list: list[Middleware] = []
@@ -275,6 +294,51 @@ class AtlassianMCP(FastMCP[MainAppContext]):
         app = super().http_app(
             path=path, middleware=final_middleware_list, transport=transport
         )
+
+        # Avoid confusing 307 redirects between `/mcp` and `/mcp/`.
+        # Some clients (and browsers) behave poorly around redirects + auth headers.
+        if isinstance(app, Starlette):
+            if transport == "sse":
+                configured_path = (path or self.settings.sse_path or "/sse")
+            else:
+                configured_path = (
+                    path or self.settings.streamable_http_path or "/mcp"
+                )
+            base_path = configured_path.rstrip("/") or "/"
+            slash_path = base_path if base_path.endswith("/") else f"{base_path}/"
+
+            def _find_route(route_path: str) -> Route | None:
+                for r in app.routes:
+                    if isinstance(r, Route) and r.path == route_path:
+                        return r
+                return None
+
+            base_route = _find_route(base_path)
+            slash_route = _find_route(slash_path)
+
+            # If only one variant exists, add the missing alias.
+            if base_route is None and slash_route is not None:
+                app.routes.insert(
+                    0,
+                    Route(
+                        base_path,
+                        slash_route.endpoint,
+                        methods=slash_route.methods,
+                        name=slash_route.name,
+                        include_in_schema=getattr(slash_route, "include_in_schema", True),
+                    ),
+                )
+            elif slash_route is None and base_route is not None and base_path != "/":
+                app.routes.insert(
+                    0,
+                    Route(
+                        slash_path,
+                        base_route.endpoint,
+                        methods=base_route.methods,
+                        name=base_route.name,
+                        include_in_schema=getattr(base_route, "include_in_schema", True),
+                    ),
+                )
 
         # SessionTokenMiddleware enforces a server-issued session token (Bearer ...).
         # This is only appropriate when the dedicated sessions feature is enabled.
