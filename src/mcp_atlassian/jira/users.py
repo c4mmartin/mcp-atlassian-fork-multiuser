@@ -2,7 +2,7 @@
 
 import logging
 import re
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import requests
 from requests.exceptions import HTTPError
@@ -33,8 +33,9 @@ class UsersMixin(JiraClient):
         Raises:
             Exception: If unable to get the current user's account ID.
         """
-        if getattr(self, "_current_user_account_id", None) is not None:
-            return self._current_user_account_id
+        cached_account_id = getattr(self, "_current_user_account_id", None)
+        if isinstance(cached_account_id, str) and cached_account_id:
+            return cached_account_id
 
         try:
             logger.debug(
@@ -86,7 +87,9 @@ class UsersMixin(JiraClient):
             logger.error(
                 f"HTTPError getting current user account ID: {http_err}. Response: {response_content[:500]}"
             )
-            status_part = f"status={status_code}" if status_code is not None else "status=unknown"
+            status_part = (
+                f"status={status_code}" if status_code is not None else "status=unknown"
+            )
             error_msg = (
                 f"Unable to get current user account ID ({status_part}): {http_err}. "
                 f"Response: {response_content[:500]}"
@@ -148,26 +151,34 @@ class UsersMixin(JiraClient):
                 logger.error(msg)
                 return None
 
-            for user in response:
+            for user_obj in response:
+                if not isinstance(user_obj, dict):
+                    continue
+
+                user: dict[str, Any] = user_obj
                 if (
                     user.get("displayName", "").lower() == username.lower()
                     or user.get("name", "").lower() == username.lower()
                     or user.get("emailAddress", "").lower() == username.lower()
                 ):
                     if self.config.is_cloud:
-                        if "accountId" in user:
-                            return user["accountId"]
+                        account_id = user.get("accountId")
+                        if isinstance(account_id, str) and account_id:
+                            return account_id
                     else:
-                        if "name" in user:
+                        name = user.get("name")
+                        if isinstance(name, str) and name:
                             logger.info(
                                 "Using 'name' for assignee field in Jira Data Center/Server"
                             )
-                            return user["name"]
-                        elif "key" in user:
+                            return name
+
+                        key = user.get("key")
+                        if isinstance(key, str) and key:
                             logger.info(
                                 "Using 'key' as fallback for assignee name in Jira Data Center/Server"
                             )
-                            return user["key"]
+                            return key
             return None
         except Exception as e:
             logger.info(f"Error looking up user directly: {str(e)}")
