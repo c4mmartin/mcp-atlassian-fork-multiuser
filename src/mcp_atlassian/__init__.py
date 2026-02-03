@@ -404,11 +404,12 @@ def main(
         )
         sys.exit(1)
 
-    # Set up signal handlers for graceful shutdown
-    setup_signal_handlers()
-
-    # For STDIO transport, also handle EOF detection
+    # Signal handling:
+    # - For HTTP transports, Uvicorn owns SIGINT/SIGTERM handling.
+    #   Installing our own handlers can interfere with Uvicorn shutdown.
+    # - For STDIO, we install minimal handlers to support container/pipe use.
     if final_transport == "stdio":
+        setup_signal_handlers()
         logger.debug("STDIO transport detected, setting up stdin monitoring")
 
     try:

@@ -16,7 +16,7 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
-from starlette.routing import Route
+from starlette.routing import Mount, Route
 
 from mcp_atlassian.confluence import ConfluenceFetcher
 from mcp_atlassian.confluence.config import ConfluenceConfig
@@ -307,36 +307,83 @@ class AtlassianMCP(FastMCP[MainAppContext]):
             base_path = configured_path.rstrip("/") or "/"
             slash_path = base_path if base_path.endswith("/") else f"{base_path}/"
 
-            def _find_route(route_path: str) -> Route | None:
+            def _find_route(route_path: str) -> Route | Mount | None:
                 for r in app.routes:
-                    if isinstance(r, Route) and r.path == route_path:
+                    if isinstance(r, (Route, Mount)) and r.path == route_path:
                         return r
                 return None
+
+            def _forward_to_mounted_app(target_app: Any, mount_base: str) -> Any:
+                mount_base = mount_base.rstrip("/") or "/"
+
+                async def _asgi(scope: dict, receive: Any, send: Any) -> None:
+                    # Forward requests as if the target_app were mounted at mount_base.
+                    # This avoids Starlette's redirect_slashes behavior for `/mcp`.
+                    new_scope = dict(scope)
+                    path = new_scope.get("path", "")
+
+                    if path == mount_base:
+                        remaining = "/"
+                    elif path.startswith(mount_base + "/"):
+                        remaining = path[len(mount_base) :]
+                        if not remaining.startswith("/"):
+                            remaining = "/" + remaining
+                    else:
+                        remaining = "/"
+
+                    root_path = new_scope.get("root_path", "")
+                    new_scope["root_path"] = root_path + mount_base
+                    new_scope["path"] = remaining
+                    if "raw_path" in new_scope:
+                        try:
+                            new_scope["raw_path"] = remaining.encode("utf-8")
+                        except Exception:
+                            pass
+
+                    await target_app(new_scope, receive, send)
+
+                return _asgi
 
             base_route = _find_route(base_path)
             slash_route = _find_route(slash_path)
 
             # If only one variant exists, add the missing alias.
             if base_route is None and slash_route is not None:
+                if isinstance(slash_route, Mount):
+                    endpoint = _forward_to_mounted_app(slash_route.app, base_path)
+                    methods = None
+                else:
+                    endpoint = slash_route.endpoint
+                    methods = slash_route.methods
                 app.routes.insert(
                     0,
                     Route(
                         base_path,
-                        slash_route.endpoint,
-                        methods=slash_route.methods,
-                        name=slash_route.name,
-                        include_in_schema=getattr(slash_route, "include_in_schema", True),
+                        endpoint,
+                        methods=methods,
+                        name=getattr(slash_route, "name", None),
+                        include_in_schema=getattr(
+                            slash_route, "include_in_schema", True
+                        ),
                     ),
                 )
             elif slash_route is None and base_route is not None and base_path != "/":
+                if isinstance(base_route, Mount):
+                    endpoint = _forward_to_mounted_app(base_route.app, base_path)
+                    methods = None
+                else:
+                    endpoint = base_route.endpoint
+                    methods = base_route.methods
                 app.routes.insert(
                     0,
                     Route(
                         slash_path,
-                        base_route.endpoint,
-                        methods=base_route.methods,
-                        name=base_route.name,
-                        include_in_schema=getattr(base_route, "include_in_schema", True),
+                        endpoint,
+                        methods=methods,
+                        name=getattr(base_route, "name", None),
+                        include_in_schema=getattr(
+                            base_route, "include_in_schema", True
+                        ),
                     ),
                 )
 

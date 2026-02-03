@@ -90,6 +90,39 @@ async def test_streamable_http_app_health_check_endpoint():
         assert response.json() == {"status": "ok"}
 
 
+@pytest.mark.anyio
+async def test_streamable_http_app_mcp_path_no_redirect():
+    """Ensure /mcp accepts POST without a 307 redirect to /mcp/.
+
+    Redirects are problematic for clients because auth headers may not be preserved.
+    """
+    app = main_mcp.streamable_http_app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://test", follow_redirects=False
+    ) as client:
+        response = await client.post(
+            "/mcp",
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream",
+            },
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "pytest", "version": "0"},
+                },
+            },
+        )
+
+        assert response.status_code != 307
+        assert "location" not in response.headers
+
+
 class TestUserTokenMiddleware:
     """Tests for the UserTokenMiddleware class."""
 
