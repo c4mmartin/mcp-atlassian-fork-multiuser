@@ -347,6 +347,26 @@ class AtlassianMCP(FastMCP[MainAppContext]):
             base_route = _find_route(base_path)
             slash_route = _find_route(slash_path)
 
+            # FastMCP currently produces both a `Mount(/mcp)` and a `Route(/mcp/)`.
+            # Requests to `/mcp` can be handled by the Mount and redirected to `/mcp/`,
+            # which is harmful for clients because auth headers may not be preserved.
+            # Shadow the Mount with an explicit Route at the same path.
+            if isinstance(base_route, Mount) and base_path != "/":
+                app.routes.insert(
+                    0,
+                    Route(
+                        base_path,
+                        _forward_to_mounted_app(base_route.app, base_path),
+                        methods=None,
+                        name=getattr(base_route, "name", None),
+                        include_in_schema=getattr(
+                            base_route, "include_in_schema", True
+                        ),
+                    ),
+                )
+                # Treat the base path as present after adding the shadow route.
+                base_route = _find_route(base_path)
+
             # If only one variant exists, add the missing alias.
             if base_route is None and slash_route is not None:
                 if isinstance(slash_route, Mount):
